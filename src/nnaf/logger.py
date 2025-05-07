@@ -1,5 +1,7 @@
 from collections import deque, defaultdict
 import logging
+import torch
+import numpy
 import enum
 
 class Mode(enum.Enum):
@@ -155,6 +157,76 @@ class Logger:
         self.str_metrics.clear()
         if self.tbrecorder is not None:
             self.global_step += 1
+    
+    def add_histogram(
+        self,
+        tag: str,
+        values: torch.Tensor | numpy.ndarray,
+        bins: str = "doane",
+    ):
+        if self.tbrecorder is not None:
+            self.tbrecorder.add_histogram(
+                tag=tag,
+                values=values,
+                global_step=self.global_step,
+                bins=bins,
+            )
+        
+    def add_image(
+        self,
+        tag: str,
+        img: torch.Tensor | numpy.ndarray,
+        dataformats: str = "CHW",
+    ):
+        if self.tbrecorder is not None:
+            self.tbrecorder.add_images(
+                tag=tag,
+                img_tensor=img,
+                global_step=self.global_step,
+                dataformats=dataformats,
+            )
+
+    def add_text(
+        self,
+        tag: str,
+        text: str,
+    ):
+        if self.tbrecorder is not None:
+            self.tbrecorder.add_text(
+                tag=tag,
+                text_string=text,
+                global_step=self.global_step,
+            )
+    
+    def add_precision_recall_curve(
+        self,
+        tag: str,
+        labels: torch.Tensor | numpy.ndarray,
+        preds: torch.Tensor | numpy.ndarray,
+        num_thresholds: int = 127,
+    ):
+        if self.tbrecorder is not None:
+            self.tbrecorder.add_pr_curve(
+                tag=tag,
+                labels=labels,
+                predictions=preds,
+                global_step=self.global_step,
+                num_thresholds=num_thresholds,
+            )
+
+    def add_hparams_metrics(
+        self,
+        tag: str,
+        hyperparams: dict,
+        metrics: dict,
+    ):
+        if self.tbrecorder is not None:
+            self.tbrecorder.add_hparams(
+                run_name=tag,
+                hparam_dict=hyperparams,
+                metric_dict=metrics,
+                global_step=self.global_step,
+            )
 
     @property
     def ignore_functions(self):
@@ -168,4 +240,9 @@ class Logger:
             self.error,
             self.critical,
             self._postproc_kwargs,
+            self.add_histogram,
+            self.add_image,
+            self.add_text,
+            self.add_precision_recall_curve,
+            self.add_hparams_metrics,
         ]

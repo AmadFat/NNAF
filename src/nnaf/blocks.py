@@ -43,37 +43,30 @@ class Mlp(nn.Module):
         norm: nn.Module = None,
         linear: nn.Module = nn.Linear,
         dropout: float = 0,
-        droppath: float = 0,
         device = None,
         dtype = None,
     ):
         super().__init__()
         from functools import partial
-        from .layers import DropPath
         factory_kwargs = {"device": device, "dtype": dtype}
         out_chs = out_chs if out_chs is not None else in_chs
         hid_chs = hid_chs if hid_chs is not None else in_chs
         dropout = partial(nn.Dropout, p=dropout) if dropout > 0 else None
-        droppath = partial(DropPath, p=droppath) if droppath > 0 else None
         self.layers = [linear(in_chs, hid_chs if depth > 1 else out_chs, bias=bias, **factory_kwargs)]
         for _ in range(depth - 2):
             seq = [activation()]
             if norm is not None:
-                seq.append(norm(hid_chs))
+                seq.append(norm(hid_chs, **factory_kwargs))
             if dropout is not None:
                 seq.append(dropout())
-            if droppath is not None:
-                seq.append(droppath())
             seq.append(linear(hid_chs, hid_chs, bias=bias, **factory_kwargs))
             self.layers.append(nn.Sequential(*seq))
         if depth > 1:
             seq = [activation()]
             if norm is not None:
-                seq.append(norm(hid_chs))
+                seq.append(norm(hid_chs, **factory_kwargs))
             if dropout is not None:
                 seq.append(dropout())
-            if droppath is not None:
-                seq.append(droppath())
             seq.append(linear(hid_chs, out_chs, bias=bias, **factory_kwargs))
             self.layers.append(nn.Sequential(*seq))
         self.layers = nn.Sequential(*self.layers)
