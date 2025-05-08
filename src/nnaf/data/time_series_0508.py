@@ -1,7 +1,3 @@
-import lmdb.cffi
-import lmdb.cpython
-
-
 def build_ts0508_lmdb_train(
     root: str,
     seed: int = 3407,
