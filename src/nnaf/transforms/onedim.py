@@ -1,4 +1,5 @@
 import torch
+from typing import Any
 
 class RandomSlice:
     def __init__(
@@ -21,3 +22,12 @@ class RandomSlice:
         _slice = torch.arange(start, end)
         _slice = x.index_select(self.dim, _slice)
         return _slice
+
+class ToDtype:
+    def __init__(self, dtype: torch.dtype):
+        self.dtype = dtype
+    
+    def __call__(self, x: Any):
+        x = torch.as_tensor(x)
+        x = x.to(self.dtype)
+        return x
