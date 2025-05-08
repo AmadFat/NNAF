@@ -30,11 +30,15 @@ class ImageNet100Dataset(torch.utils.data.Dataset):
         self.transform = transform
         self.target_transform = target_transform
 
-        import atexit
-        atexit.register(self.close)
+        import weakref
+        weakref.finalize(self, self.close)
     
     def close(self):
-        self.env.close()
+        try:
+            self.txn.abort()
+            self.env.close()
+        except Exception:
+            pass
 
     def __len__(self):
         return len(self.keys)
@@ -184,7 +188,7 @@ def build_in100_lmdb(
                         continue
                     
                     path, img_bytes, label = item
-                    key = xxhash.xxh32_hexdigest(str(path.resolve()).encode(), seed=seed).encode()
+                    key = xxhash.xxh32_hexdigest(bytes(path.resolve()), seed=seed).encode()
                     # Check for key collisions
                     while txn.get(key) is not None:
                         key = xxhash.xxh32_hexdigest(key + b"oh-my-hash", seed=seed).encode()
