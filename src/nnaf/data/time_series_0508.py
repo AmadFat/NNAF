@@ -1,3 +1,12 @@
+import torch.utils.data
+
+class TimeSeries0508Dataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        root: str,
+    ):
+        pass
+
 def build_ts0508_lmdb_train(
     root: str,
     seed: int = 3407,

@@ -12,6 +12,7 @@ dependencies = [
     "standard-imghdr>=3.13.0",
     "line-profiler>=4.2.0",
     "scipy>=1.15.3",
+    "anytree>=2.13.0",
 ]
 name = "nnaf"
 requires-python = ">=3.12"
