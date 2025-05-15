@@ -1,254 +1,199 @@
-from collections.abc import Callable
-import torch.utils.data
-from PIL import Image
-import json
-import io
+from typing import Literal
 
-class ImageNet100Dataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        root: str,
-        train: bool = True,
-        transform: Callable = None,
-        target_transform: Callable = None,
-    ):
-        import lmdb
-        from pathlib import Path
-        db_path = str(Path(root) / ("train.lmdb" if train else "val.lmdb"))
-        self.env = lmdb.Environment(
-            db_path,
-            readonly=True,
-            lock=False,
-            readahead=False,
-            create=False,
-        )
-        self.txn = self.env.begin(write=False)
-        self.keys = json.loads(self.txn.get(b"__keys__"))
-        self.labels = json.loads(self.txn.get(b"__labels__"))
-        self.key2label = json.loads(self.txn.get(b"__key2label__"))
-        self.label2id = {l: i for i, (l, _) in enumerate(self.labels.items())}
-        self.transform = transform
-        self.target_transform = target_transform
-
-        import weakref
-        weakref.finalize(self, self.close)
-    
-    def close(self):
-        try:
-            self.txn.abort()
-            self.env.close()
-        except Exception:
-            pass
-
-    def __len__(self):
-        return len(self.keys)
-
-    def __getitem__(self, idx):
-        key = self.keys[idx]
-        buf = io.BytesIO(self.txn.get(key.encode()))
-        img = Image.open(buf).convert("RGB")
-        buf.close()
-        ann = self.label2id[self.key2label[key]]
-        if self.transform is not None:
-            img = self.transform(img)
-        if self.target_transform is not None:
-            ann = self.target_transform(ann)
-        return img, ann
-
-def ImageNet100Loader(
-    dataset: torch.utils.data.Dataset,
-    batch_size: int = 1,
-    shuffle: bool = True,
-    drop_last: bool = True,
-    collate_fn: Callable = None,
-    num_workers: int = 0,
-    pin_memory: bool = False,
-    in_order: bool = False,
-):
-    def default_collate(batch):
-        imgs, anns = zip(*batch)
-        imgs = torch.stack(imgs)
-        anns = torch.as_tensor(anns)
-        return imgs, anns
-    import multiprocessing
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-        collate_fn=collate_fn or default_collate,
-        num_workers=num_workers or multiprocessing.cpu_count(),
-        pin_memory=pin_memory,
-        in_order=in_order,
-    )
-    return loader
-
-def build_in100_lmdb(
-    source_path: str,
-    map_size: int = 1 << 40,
-    commit_freq: int = 1000,
-    num_consumers: int = 0,
-    quality: int = 100,
-    seed: int = 3407,
-):
-    import lmdb
-    import queue
+def build_in100_tfrec(source_path: str):
+    import os
+    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0" # keep it as it was
+    import json
     import random
     import xxhash
-    import multiprocessing
+    import shutil
+    import tensorflow as tf
     from pathlib import Path
+    from subprocess import call
     from alive_progress import alive_bar
-    
-    # Auto-configure optimal worker count
-    if num_consumers <= 0:
-        num_consumers = max(1, multiprocessing.cpu_count())
-    
-    random.seed(seed)
+
+    ideal_shard_size = 1 << 27
+
+    # create hash label
+    with (Path(source_path) / "Labels.json").open("rb") as f:
+        label2ann = json.load(f)
+    label2hash, hash2ann = dict(), dict()
+    for label, ann in label2ann.items():
+        label_hashed = xxhash.xxh32_hexdigest(label.encode())
+        while label_hashed in hash2ann:
+            label_hashed = xxhash.xxh32_hexdigest(label_hashed.encode() + b"oh-my-hash")
+        label2hash[label] = label_hashed
+        hash2ann[label_hashed] = ann
+    assert len(label2hash) == len(hash2ann) == 100
+
+    tfrec_path = Path(source_path) / "tfrec"
+    shutil.rmtree(tfrec_path, ignore_errors=True)
+    tfrec_path.mkdir(parents=True, exist_ok=True)
+    with (tfrec_path / "labels.json").open("w") as f:
+        json.dump(hash2ann, f)
 
     for part in ["train", "val"]:
-        path_list = list(Path(source_path).glob(f"{part}.*/*/*.JPEG"))
-        target_path = Path(source_path) / f"{part}.lmdb"
+        shard_idx = 1
+        image_paths = list(Path(source_path).glob(f"{part}.*/*/*.JPEG"))
+        random.shuffle(image_paths)
+        target_path = tfrec_path / part
+        shutil.rmtree(target_path, ignore_errors=True)
         target_path.mkdir(parents=True, exist_ok=True)
-        
-        # Optimize LMDB parameters for performance
-        env = lmdb.Environment(
-            str(target_path), 
-            map_size=map_size,
-        )
-        
-        random.shuffle(path_list)
-        
-        # Increase queue sizes for better throughput
-        img_queue = multiprocessing.Queue(256)
-        bytes_queue = multiprocessing.Queue(256)
-        keys, key2label = [], {}
-        
-        # Producer process - better for I/O operations
-        def producer(path_list, iq):
-            for path in path_list:
-                try:
-                    img = Image.open(str(path)).convert("RGB")
-                    iq.put((path, img), block=True)
-                except Exception as e:
-                    print(f"Error loading image {path}: {e}")
-            for _ in range(num_consumers):
-                iq.put(None)  # Signal end
+        shard_path = target_path / f"{shard_idx:04d}.tfrecord"
+        writer = tf.io.TFRecordWriter(path=str(shard_path)) # no compression
 
-        # Consumer process - CPU-bound task benefits from multiprocessing
-        def consumer(iq, bq):
-            while True:
-                item = iq.get()
-                if item is None:
-                    break
-                
-                path, img = item
-                try:
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", lossless=False, Q=quality)
-                    img_bytes = buf.getvalue()
-                    buf.close()
-                    img.close()  # Release memory
-                    
-                    
-                    bq.put((path, img_bytes, path.parent.name))
-                except Exception as e:
-                    print(f"Error processing image {path}: {e}")
-            
-            bq.put(None)  # Signal completion
+        with alive_bar() as bar:
+            for path in image_paths:
+                if shard_path.stat().st_size > ideal_shard_size:
+                    writer.close()
+                    call(["tfrecord2idx", str(shard_path), str(shard_path.with_suffix(".idx"))])
+                    shard_idx += 1
+                    shard_path = target_path / f"{shard_idx:04d}.tfrecord"
+                    writer = tf.io.TFRecordWriter(path=str(shard_path))
+                img_bytes = path.read_bytes()
+                label = label2hash[path.parent.name].encode()
+                example = tf.train.Example(features=tf.train.Features(feature={
+                    "image/jpeg": tf.train.Feature(bytes_list=tf.train.BytesList(value=[img_bytes])),
+                    "label/bytes": tf.train.Feature(bytes_list=tf.train.BytesList(value=[label])),
+                })).SerializeToString()
+                writer.write(example)
+                bar()
+            writer.close()
+            call(["tfrecord2idx", str(shard_path), str(shard_path.with_suffix(".idx"))])
 
-        # Start producer process
-        producer_proc = multiprocessing.Process(
-            target=producer, 
-            args=(path_list, img_queue)
-        )
-        producer_proc.start()
-        
-        # Start consumer processes
-        consumers = []
-        for _ in range(num_consumers):
-            p = multiprocessing.Process(
-                target=consumer, 
-                args=(img_queue, bytes_queue)
+def imagenet100_loader(
+    source_path: str,
+    part: Literal["train", "val"] = "train",
+    batch_size: int = 1,
+    shuffle: bool = False,
+    drop_last: bool = False,
+    num_workers: int = 0,
+    seed: int = 3407,
+    use_dali: bool = True,
+):
+    if use_dali:
+        from nvidia import dali
+        from pathlib import Path
+        from nvidia.dali.auto_aug import rand_augment
+        from nvidia.dali import pipeline_def
+
+        target_path = Path(source_path) / "tfrec" / part
+        tfrec_paths = list(target_path.glob("*.tfrecord"))
+        idx_paths = list(target_path.glob("*.idx"))
+
+        # dali.pipeline.Pipeline()
+
+        @pipeline_def(enable_conditionals=True, exec_dynamic=True, exec_async=True, exec_pipelined=False)
+        def my_ppl(tfrec_paths, idx_paths):
+            inputs = dali.fn.readers.tfrecord(
+                path=tfrec_paths,
+                index_path=idx_paths,
+                features={
+                    "image/jpeg": dali.tfrecord.FixedLenFeature((), dali.tfrecord.string, ""),
+                    "label/bytes": dali.tfrecord.FixedLenFeature((), dali.tfrecord.string, ""),
+                },
             )
-            p.start()
-            consumers.append(p)
-        
-        # Process results and write to LMDB in batches
-        txn = env.begin(write=True)
-        total_written = 0
-        completed_consumers = 0
-        batch = []
-        
-        with alive_bar(len(path_list)) as bar:
-            while completed_consumers < num_consumers:
-                try:
-                    item = bytes_queue.get()
-                    if item is None:
-                        completed_consumers += 1
-                        continue
-                    
-                    path, img_bytes, label = item
-                    key = xxhash.xxh32_hexdigest(bytes(path.resolve()), seed=seed).encode()
-                    # Check for key collisions
-                    while txn.get(key) is not None:
-                        key = xxhash.xxh32_hexdigest(key + b"oh-my-hash", seed=seed).encode()
-                    
-                    # Add to batch
-                    batch.append((key, img_bytes, label))
-                    
-                    # Write batch when it reaches sufficient size
-                    if len(batch) >= 100:  # Batch writes for better performance
-                        for k, v, l in batch:
-                            txn.put(k, v)
-                            k = k.decode()
-                            keys.append(k)
-                            key2label[k] = l
-                        batch = []
-                        total_written += 100
-                        bar.text = f"length of img_queue: {img_queue.qsize()}; length of bytes_queue: {bytes_queue.qsize()}"
-                        bar(100)
-                        
-                        # Commit transaction periodically
-                        if total_written % commit_freq == 0:
-                            txn.commit()
-                            txn = env.begin(write=True)
-                except queue.Empty:
-                    # Check if all processes are done
-                    if not producer_proc.is_alive() and all(not p.is_alive() for p in consumers):
-                        break
-        
-        # Write remaining batch
-        if batch:
-            for k, v, l in batch:
-                txn.put(k, v)
-                k = k.decode()
-                keys.append(k)
-                key2label[k] = l
-            bar(len(batch))
-        
-        txn.put(b"__keys__", json.dumps(keys).encode())
-        txn.put(b"__key2label__", json.dumps(key2label).encode())
-        with (Path(source_path) / "Labels.json").open() as f:
-            labels = json.load(f)
-        txn.put(b"__labels__", json.dumps(labels).encode())
+            images = dali.fn.decoders.image(
+                inputs["image/jpeg"],
+                device="mixed",
+                output_type=dali.types.DALIImageType.RGB,
+                # cache_size=1 << 10, # 1 GB
+                cache_threshold=0, # 128 KB
+                # cache_type="largest",
+                # use_fast_idct=False,
+            ).gpu()
+            images = rand_augment.rand_augment(images, n=2, m=9)
+            images = dali.fn.resize(
+                images,
+                device="gpu",
+                size=(224, 224),
+                interp_type=dali.types.DALIInterpType.INTERP_LINEAR,
+            )
+            return images, inputs["label/bytes"]
 
-        # Clean up
-        txn.commit()
-        env.sync()
-        env.close()
+        pipe = my_ppl(
+            tfrec_paths=tfrec_paths,
+            idx_paths=idx_paths,
+            batch_size=batch_size,
+            num_threads=num_workers,
+            prefetch_queue_depth=2,
+            seed=seed,
+        )
+        pipe.build()
+        return pipe
 
-        with Path(target_path / "metadata.json").open("w") as f:
-            json.dump({
-                "__keys__": "All keys in the dataset",
-                "__key2label__": "Mapping from keys to labels",
-                "__labels__": "Mapping from label IDs to human-readable names",
-                "image encoding": "JPEG",
-                "metadata encoding": "JSON",
-            }, f)
+    else:
+        import torch
+        from PIL import Image
+        from pathlib import Path
+        class Dataset(torch.utils.data.Dataset):
+            def __init__(
+                self,
+                source_path: str,
+                part: str,
+                transform=None,
+            ):
+                self.img_paths = list(Path(source_path).glob(f"{part}.*/*/*.JPEG"))
+                self.transform = transform
+            
+            def __len__(self):
+                return len(self.img_paths)
+            
+            def __getitem__(self, idx):
+                img_path = self.img_paths[idx]
+                img = Image.open(img_path).convert("RGB")
+                if self.transform is not None:
+                    img = self.transform(img)
+                return img
         
-        # Ensure all processes are terminated
-        for p in consumers:
-            p.join()
-        producer_proc.join()
-        
-        print(f"Completed {part} dataset: {len(path_list)} images")
+        from torchvision.transforms import v2
+        transform = v2.Compose([
+            v2.ToImage(),
+            v2.RandAugment(2, 9),
+            v2.Resize((224, 224)),
+            v2.ToDtype(torch.float32, True),
+        ])
+
+        data = Dataset(source_path, part, transform)
+        loader = torch.utils.data.DataLoader(
+            data,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=False,
+        )
+        return loader
+
+def io_benchmark_fetch_data(args):
+    from alive_progress import alive_bar
+
+    batch_size = 64
+    test_num = int(3e4 / batch_size)
+    
+    if args == "dali": 
+
+        pipe = imagenet100_loader(
+            "/home/af/Data/ImageNet100",
+            part="train",
+            batch_size=64,
+            num_workers=32,
+        )
+        with alive_bar() as bar:
+            while True:
+                images, labels = pipe.run()
+                bar()
+
+    elif args == "torch":
+        loader = imagenet100_loader(
+            "/home/af/Data/ImageNet100",
+            part="train",
+            batch_size=64,
+            num_workers=32,
+            use_dali=False
+        )
+        with alive_bar() as bar:
+            for i, images in enumerate(loader):
+                print(images.shape)
+                bar()

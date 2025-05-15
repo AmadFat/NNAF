@@ -3,6 +3,8 @@
 profiles
 test
 runs
+scripts
+opencv*
 
 # pixi environments
 .pixi
