@@ -1,65 +1,34 @@
-# if __name__ == "__main__":
-#     from nnaf.data.in100 import in100_wds_dali_loader
-#     from alive_progress import alive_bar
-#     from matplotlib import pyplot as plt
-#     from matplotlib import gridspec
-#     import numpy as np
-#     import os
-    
+import random
 
+import wandb
 
-#     # Check if display is available
-#     # if 'DISPLAY' in os.environ:
-#     # try:
-#     plt.switch_backend('Qt5Agg')
-#     interactive = True
-#         # except ImportError:
-#         #     import matplotlib
-#         #     matplotlib.use('Agg')
-#     #         interactive = False
-#     # else:
-#     #     import matplotlib
-#     #     matplotlib.use('Agg')
-#     #     interactive = False
+# Start a new wandb run to track this script.
+run = wandb.init(
+    mode="offline",
+    # Set the wandb entity where your project will be logged (generally your team name).
+    entity="amadfat-hust",
+    # Set the wandb project where this run will be logged.
+    project="my-awesome-project",
+    # Track hyperparameters and run metadata.
+    config={
+        "learning_rate": 0.02,
+        "architecture": "CNN",
+        "dataset": "CIFAR-100",
+        "epochs": 10,
+    },
+)
 
-#     batch_size = 12
+run.log()
 
-#     pipe = in100_wds_dali_loader(
-#         "/home/af/Data/ImageNet100",
-#         part="train",
-#         batch_size=batch_size,
-#         num_workers=32,
-#     )
-    
-#     def show_images(image_batch, labels):
-#         columns = 4
-#         rows = (batch_size + 1) // (columns)
-#         fig = plt.figure(figsize=(32, (32 // columns) * rows))
-#         gs = gridspec.GridSpec(rows, columns)
-#         for j in range(min(rows * columns, batch_size)):
-#             plt.subplot(gs[j])
-#             plt.axis("off")
-#             ascii = labels.at(j)
-#             plt.title(
-#                 "".join([chr(item) for item in ascii]), fontdict={"fontsize": 25}
-#             )
-#             img_chw = image_batch.at(j)
-#             img_hwc = np.transpose(img_chw, (1, 2, 0)) / 255.0
-#             plt.imshow(img_hwc)
-        
-#         if interactive:
-#             plt.show()
-#         else:
-#             plt.savefig("imagenet100_sample.png", bbox_inches='tight', dpi=150)
-#             plt.close()
-#             print("Saved visualization to imagenet100_sample.png")
+# Simulate training.
+epochs = 10
+offset = random.random() / 5
+for epoch in range(2, epochs):
+    acc = 1 - 2**-epoch - random.random() / epoch - offset
+    loss = 2**-epoch + random.random() / epoch + offset
 
-#     img, ann = pipe.run()
-#     show_images(img.as_cpu(), ann.as_cpu())
+    # Log metrics to wandb.
+    run.log({"acc": acc, "loss": loss})
 
-if __name__ == "__main__":
-    from nnaf.data.voc07 import build_voc07_wds
-    from nnaf.data.in100 import build_in100_wds
-
-    # build_voc07_wds("/home/af/Data/VOC07")
-    build_in100_wds("/home/af/Data/ImageNet100")
+# Finish the run and upload any remaining data.
+run.finish()

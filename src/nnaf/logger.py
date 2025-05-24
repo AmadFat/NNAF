@@ -5,10 +5,10 @@ import numpy
 import enum
 
 class Mode(enum.Enum):
-    DEBUG = logging.DEBUG
-    INFO = logging.INFO
-    WARNING = logging.WARN
-    CRITICAL = logging.CRITICAL
+    DEBUG = 1 << 0
+    NORMAL = 1 << 1
+    IMPORTANT = 1 << 2
+
 
 class Fmt(enum.Enum):
     DEBUG_TRACE = "[%(levelname)s] %(asctime)s Epoch:%(epoch)s Step:%(step)s %(filename)s:%(lineno)d: %(message)s"
@@ -64,10 +64,10 @@ class Logger:
         self.tbrecorder = None
         if tb_path is not None:
             try:
-                import torch.utils.tensorboard, pathlib
+                import tensorboardX, pathlib
                 self.debug(f"Tensorboard path: {tb_path}")
                 pathlib.Path(tb_path).mkdir(parents=True, exist_ok=True)
-                self.tbrecorder = torch.utils.tensorboard.SummaryWriter(tb_path)
+                self.tbrecorder = tensorboardX.SummaryWriter(tb_path)
                 self.global_step = 1
             except ImportError:
                 self.warning("module `tensorboard` not found: relative features disabled.")
@@ -246,3 +246,10 @@ class Logger:
             self.add_precision_recall_curve,
             self.add_hparams_metrics,
         ]
+
+
+class Loggerv2:
+    def __init__(
+        self,
+        
+    )
