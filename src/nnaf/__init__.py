@@ -1,3 +1,5 @@
+from . import _types
+
 from .logger import Logger
 from .engine import train_one_epoch
 
@@ -6,3 +8,9 @@ from . import optim
 from . import layers, blocks
 from . import miscs
 from . import transforms
+
+
+def _initialization():
+    import numpy
+
+    numpy.set_printoptions(precision=4)

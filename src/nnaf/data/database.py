@@ -1,108 +1,83 @@
-from collections.abc import Iterator
-# import sqlite3, lmdb, xxhash
-from nvidia import nvimgcodec
-from typing import Literal
-from pathlib import Path
+from .._types import *
+from ..miscs import refresh_dir
+import os, pwd, xxhash
 
-def create_cv_database(
-    target_path: str,
-    map_size: int = 1 << 40,
+
+class NodupHash:
+    def __init__(
+        self,
+        existed_hashes = None,
+    ):
+        self.hash_set = set(existed_hashes or [])
+        self.hash_func = xxhash.xxh64_hexdigest
+    
+    def __call__(self, key_to_hash: str) -> str:
+        key = self.hash_func(key_to_hash.encode())
+        while key in self.hash_set:
+            key = self.hash_func(key.encode() + b"omh")
+        self.hash_set.add(key)
+        return key
+    
+    def dump_hashed_keys(self, path: PathOrStr):
+        import json
+        with Path(path).open("w") as f:
+            json.dump(list(self.hash_set), f)
+
+
+def write_wds_data(
+    source: Iterable,
+    target_path: PathOrStr,
+    process_func: Callable[..., dict[str, str | bytes]] = None,
+    parallel_njobs: int = 2,
+    parallel_backend: str = "threading",
+    shard_pattern: str = "%08d",
+    shard_maxcount: int = 1000,
+    shard_maxsize: int = 1 << 28,
+    shard_user: str = pwd.getpwuid(os.getuid()).pw_name,
+    shard_group: str = "nnaf",
+    refresh: bool = False,
 ):
-    from pathlib import Path
-    import lmdb, sqlite3
-    target_path = Path(target_path)
-    target_path.mkdir(parents=True, exist_ok=True)
-    sql_conn = sqlite3.connect(target_path / "keys.db")
-    sql_cursor = sql_conn.cursor()
-    sql_cursor.execute("""
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-)
-    """)
-    sql_cursor.execute("""
-CREATE TABLE IF NOT EXISTS main (
-    key BLOB PRIMARY KEY,
-    label BLOB,
-    meta TEXT
-)
-    """)
-    sql_cursor.execute("PRAGMA journal_mode=WAL;")
-    sql_cursor.execute("PRAGMA synchronous=NORMAL;")
-    sql_cursor.execute("PRAGMA cache_size=-64000;")
-    sql_cursor.execute("PRAGMA temp_store=MEMORY;")
-    sql_cursor.execute("PRAGMA mmap_size=268435456;")
-    sql_conn.commit()
-    lmdb_env = lmdb.Environment(str(target_path), map_size=map_size, writemap=True)
-    return sql_conn, sql_cursor, lmdb_env
-
-def write_cv_batch(
-    sql_cursor: sqlite3.Cursor,
-    lmdb_txn: lmdb.Transaction,
-    path_batch: list[str],
-    label_batch: list[str],
-    image_format: Literal[".png", ".jpg"],
-    quality: int,
-    label_hashing_dict: dict[str, bytes],
-    seed=3407,
-    bar=None,
-):
-    enc = nvimgcodec.Encoder()
-    dec = nvimgcodec.Decoder()
-    img_batch = dec.read(path_batch)
-    img_bytes_batch = enc.encode(
-        img_batch,
-        image_format,
-        params=nvimgcodec.EncodeParams(
-            quality=quality,
-            jpeg_encode_params=nvimgcodec.JpegEncodeParams(optimized_huffman=True),
-        ),
-    )
-    for path, img_bytes, label in zip(path_batch, img_bytes_batch, label_batch):
-        if bar:
-            bar()
-        path = Path(path)
-        key_hashed = xxhash.xxh32_digest(str(path.absolute()).encode(), seed=seed)
-        while lmdb_txn.get(key_hashed) is not None:
-            key_hashed = xxhash.xxh32_digest(key_hashed + b"oh-my-hash", seed=seed)
-        lmdb_txn.put(key_hashed, img_bytes)
-        if label in label_hashing_dict.keys():
-            label_hashed = label_hashing_dict[label]
-        else:
-            label_hashed = xxhash.xxh32_digest(label.encode(), seed=seed)
-            while label_hashed in label_hashing_dict.values():
-                label_hashed = xxhash.xxh32_digest(label_hashed + b"oh-my-hash", seed=seed)
-            label_hashing_dict[label] = label_hashed
-        meta = ""
-        sql_cursor.execute("INSERT OR REPLACE INTO main (key, label, meta) VALUES (?, ?, ?)", (key_hashed, label_hashed, meta))
-
-
-def decode_bytes_benchmark(option):
-    from .in100 import ImageNet100Dataset
-    data = ImageNet100Dataset(
-        root="/home/af/Data/ImageNet100",
-        try_fastdb=True,
-    )
-    test_size = int(1e4)
+    import webdataset as wds
     from alive_progress import alive_bar
-    if option == "pywebp":
-        import webp
-        import torch
-        with alive_bar(test_size) as bar:
-            for i in range(test_size):
-                img_bytes, _ = data[i]
-                img = webp.WebPData.from_buffer(img_bytes)
-                img = img.decode(webp.WebPColorMode.RGB)
-                img = torch.from_numpy(img)
-                bar()
-    if option == "pil":
-        from PIL import Image
-        import io
-        from torchvision.transforms.v2 import functional as F
-        with alive_bar(test_size) as bar:
-            for i in range(test_size):
-                img_bytes, _ = data[i]
-                img = Image.open(io.BytesIO(img_bytes))
-                img = img.convert("RGB")
-                img = F.to_image(img)
-                bar()
+    from joblib import Parallel, delayed
+
+    if refresh:
+        refresh_dir(target_path)
+
+    sink = wds.ShardWriter(
+        pattern=(Path(target_path) / shard_pattern).with_suffix(".tar").resolve().as_posix(),
+        maxcount=shard_maxcount,
+        maxsize=shard_maxsize,
+        user=shard_user,
+        group=shard_group,
+        keep_meta=False,
+    )
+
+    if process_func is not None:
+        parallel = Parallel(n_jobs=parallel_njobs, return_as="generator", backend=parallel_backend)
+        pool = parallel(delayed(process_func)(src) for src in source)
+    else:
+        pool = source
+
+    with alive_bar() as bar:
+        for i, d in enumerate(pool, 1):
+            sink.write(d)
+            bar()
+    
+    sink.close()
+    pool.close()
+
+    try:
+        import nvidia.dali
+        import subprocess, multiprocessing
+        from joblib import Parallel, delayed
+
+        shard_paths = Path(target_path).glob("*.tar")
+        parallel = Parallel(n_jobs=multiprocessing.cpu_count(), backend="loky", return_as="generator")
+        pool = parallel(delayed(subprocess.run)(["wds2idx", path.resolve().as_posix()]) for path in shard_paths)
+        for result in pool:
+            if result.returncode != 0:
+                raise RuntimeError(f"wds2idx failed with error code {result.returncode}")
+    except ImportError:
+        import warnings
+        warnings.warn("DALI not installed, skipping DALI pipeline generation.")
