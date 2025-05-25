@@ -1,0 +1,12 @@
+.venv
+*__pycache__*
+profiles
+test
+runs
+scripts
+opencv*
+wandb
+
+# pixi environments
+.pixi
+*.egg-info
