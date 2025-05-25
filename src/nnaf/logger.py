@@ -246,10 +246,3 @@ class Logger:
             self.add_precision_recall_curve,
             self.add_hparams_metrics,
         ]
-
-
-class Loggerv2:
-    def __init__(
-        self,
-        
-    )
