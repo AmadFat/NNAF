@@ -1,8 +1,8 @@
 [project]
 authors = [{name = "AmadFat", email = "1943269060@qq.com"}]
 dependencies = [
-    "torch",
-    "torchvision",
+    # "torch",
+    # "torchvision",
     "standard-imghdr>=3.13.0",
     "anytree>=2.13.0",
     "alive-progress>=3.2.0",
@@ -19,19 +19,9 @@ gui = [
     "matplotlib>=3.10.3",
     "pyqt5>=5.15.11",
 ]
-loggerv2 = [
-    "rich>=14.0.0",
-    "structlog>=25.3.0",
-    "tabulate>=0.9.0",
-    "wandb>=0.19.11",
-    "wandb-workspaces>=0.1.14",
-]
-logger = [
-    "rich>=14.0.0",
-    "structlog>=25.3.0",
-    "tabulate>=0.9.0",
-    "tensorboard>=2.19.0",
-    "tensorboardx>=2.6.2.2",
+torch-related = [
+    "torch",
+    "torchvision",
 ]
 
 [build-system]
