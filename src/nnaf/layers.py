@@ -1,12 +1,11 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from .pttype import *
+
 
 class DropPath(nn.Module):
     def __init__(self, p: float = 0):
         super().__init__()
         self.p = nn.Buffer(torch.tensor(p, dtype=torch.float))
-    
+
     def forward(self, x: torch.Tensor):
         if abs(self.p) < 1e-6 or not self.training:
             return x
@@ -16,6 +15,6 @@ class DropPath(nn.Module):
         if keep > 0:
             choice.div_(keep)
         return x * choice
-    
+
     def extra_repr(self):
         return f"p={self.p.item():.1f}"

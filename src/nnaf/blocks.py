@@ -1,7 +1,7 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from collections.abc import Callable
+from nnaf_utils.pytype import *
+
+from .pttype import *
+
 
 class GatedMlp(nn.Module):
     def __init__(
@@ -12,8 +12,8 @@ class GatedMlp(nn.Module):
         activation: Callable = F.silu,
         bias: bool = False,
         multiple_of: int = 128,
-        device = None,
-        dtype = None,
+        device=None,
+        dtype=None,
     ):
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -23,13 +23,14 @@ class GatedMlp(nn.Module):
         self.fc1 = nn.Linear(in_chs, 2 * hid_chs, bias=bias, **factory_kwargs)
         self.activation = activation
         self.fc2 = nn.Linear(hid_chs, out_chs, bias=bias, **factory_kwargs)
-    
+
     def forward(self, x):
         y = self.fc1(x)
         y, gate = y.chunk(2, dim=-1)
         y = y * self.activation(gate)
         y = self.fc2(y)
         return y
+
 
 class Mlp(nn.Module):
     def __init__(
@@ -43,11 +44,12 @@ class Mlp(nn.Module):
         norm: nn.Module = None,
         linear: nn.Module = nn.Linear,
         dropout: float = 0,
-        device = None,
-        dtype = None,
+        device=None,
+        dtype=None,
     ):
         super().__init__()
         from functools import partial
+
         factory_kwargs = {"device": device, "dtype": dtype}
         out_chs = out_chs if out_chs is not None else in_chs
         hid_chs = hid_chs if hid_chs is not None else in_chs

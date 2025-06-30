@@ -1,36 +1,62 @@
 [project]
 authors = [{name = "AmadFat", email = "1943269060@qq.com"}]
 dependencies = [
-    # "torch",
-    # "torchvision",
     "standard-imghdr>=3.13.0",
     "anytree>=2.13.0",
     "alive-progress>=3.2.0",
+    "xxhash>=3.5.0",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
+    "nnaf-utils==0.1.0",
+    "nnaf-logger==0.1.0",
 ]
 name = "nnaf"
 requires-python = ">=3.11,<3.14"
 version = "0.1.0"
-
-[project.urls]
-Repository = "https://github.com/AmadFat/NNAF.git"
+urls = { Repository = "https://github.com/AmadFat/NNAF.git" }
 
 [project.optional-dependencies]
 gui = [
     "matplotlib>=3.10.3",
     "pyqt5>=5.15.11",
 ]
-torch-related = [
-    "torch",
-    "torchvision",
-]
+
+[tool.uv.sources]
+# nnaf-utils = { git = "https://github.com/AmadFat/nnaf-utils" }
+# nnaf-logger = { git = "https://github.com/AmadFat/nnaf-logger" }
+nnaf-utils = { path = "/home/af/projects/nnaf-utils/dist/nnaf_utils-0.1.0-py3-none-any.whl" }
+nnaf-logger = { path = "/home/af/projects/nnaf-logger/dist/nnaf_logger-0.1.0-py3-none-any.whl" }
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu128"
+
+[[tool.uv.index]]
+url = "https://mirrors.ustc.edu.cn/pypi/simple"
+default = true
 
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
-[[tool.uv.index]]
-url = "https://pypi.nvidia.com"
+[tool.ruff]
+line-length = 120
+indent-width = 4
+target-version = "py313"
 
-[[tool.uv.index]]
-url = "http://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "UP",
+    "B",
+    "I",
+    "SIM",
+    "D"
+]
+ignore = [
+    "D100",
+    "D102",
+    "F401",
+    "F403",
+    "F405",
+]

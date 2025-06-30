@@ -1,77 +1,78 @@
-import torch
-from .logger import Logger
+from nnaf_logger import Loggerv2
+from nnaf_utils.pytype import *
 
-_grad_scaler = None
-_bs_accumulated = None
+from .pttype import *
 
-def train_one_epoch(
-    model: torch.nn.Module,
-    loader: torch.utils.data.DataLoader,
-    criterion: torch.nn.Module,
-    optimizer: torch.optim.Optimizer,
-    grad_clip: float = None,
-    lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None,
-    accumulate_batch_size: int = None,
-    logger: Logger = None,
-    device: str = "cpu",
-    epoch: int = 0,
-    max_epochs: int = 0,
-    use_amp: bool = False,
-):
-    global _grad_scaler, _bs_accumulated
 
-    model.train()
-    if use_amp and _grad_scaler is None:
-            _grad_scaler = torch.GradScaler(device=device)
-    if accumulate_batch_size is not None:
-        _bs_accumulated = 0
+class Trainer:
+    def __init__(
+        self,
+        device: str | torch.device = "cpu",
+        amp_dtype: torch.dtype = None,
+        grad_accumulate_steps: int = None,
+        grad_clip: float = None,
+        logger: Loggerv2 = None,
+    ):
+        self.device = device
+        self.enable_amp = amp_dtype is not None
+        self.amp_dtype = amp_dtype
+        self.grad_accumulate_steps = grad_accumulate_steps or 1
+        self.grad_clip = grad_clip
+        self.logger = logger
 
-    for step, (imgs, anns) in enumerate(loader, 1):
-        imgs = imgs.to(device, non_blocking=True)
-        anns = anns.to(device, non_blocking=True)
+        self.grad_scaler = torch.GradScaler(device=device, enabled=self.enable_amp)
+        self.cal_index = 0
 
-        with torch.autocast(device_type=device, enabled=use_amp):
-            preds = model(imgs)
-            loss = criterion(preds, anns)
+    def fit_one_epoch(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        criterion: nn.Module | Callable,
+        optimizer: Optimizer,
+        step_scheduler: LRScheduler = None,
+        epoch_scheduler: LRScheduler = None,
+        epoch: int = 0,
+    ):
+        model.train()
 
-        if use_amp:
-            _grad_scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        for step, (x, y) in enumerate(loader, 1):
+            # send to target device
+            x = x.to(self.device, non_blocking=True)
+            y = y.to(self.device, non_blocking=True)
 
-        if accumulate_batch_size is not None:
-            _bs_accumulated += imgs.shape[0]
+            # forward and backward
+            with torch.autocast(
+                device_type=self.device,
+                dtype=self.amp_dtype,
+                enabled=self.enable_amp,
+            ):
+                pred = model(x)
+                loss = criterion(pred, y)
+            self.grad_scaler.scale(loss).backward()
+            self.cal_index += 1
 
-        if accumulate_batch_size is None or _bs_accumulated == accumulate_batch_size:
-            if grad_clip is not None:
-                if use_amp:
-                    _grad_scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            if self.cal_index % self.grad_accumulate_steps == 0:
+                if self.grad_clip:
+                    self.grad_scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.grad_clip)
 
-            if use_amp:
-                _grad_scaler.step(optimizer)
-                _grad_scaler.update()
-            else:
-                optimizer.step()
-            optimizer.zero_grad()
+                self.grad_scaler.step(optimizer)
+                self.grad_scaler.update()
+                optimizer.zero_grad()
 
-            if accumulate_batch_size is not None:
-                _bs_accumulated = 0
+                # Loggerv2: add and commit
+                if self.logger:
+                    metrics = dict(
+                        loss=loss.item(),
+                        lr=optimizer.param_groups[0]["lr"],
+                    )
+                    self.logger.add(epoch=epoch, step=step, tag="train", **metrics)
+                    self.logger.commit(epoch=epoch, step=step)
 
-        if device == "cuda":
-            torch.cuda.synchronize()
+                # step_lr_scheduler
+                if step_scheduler:
+                    step_scheduler.step()
 
-        if logger is not None:
-            loss = loss.item()
-            lr = optimizer.param_groups[0]["lr"]
-            logger.add(
-                loss=(loss, dict(trace=True, fmt=".4f", tag="train")),
-                lr=(lr, dict(trace=False, fmt=".3e"))
-            )
-            logger.commit(
-                epoch=epoch, max_epochs=max_epochs,
-                step=step, max_steps=len(loader),
-            )
-
-        if lr_scheduler is not None:
-            lr_scheduler.step()
+        # epoch_lr_scheduler
+        if epoch_scheduler:
+            epoch_scheduler.step()
